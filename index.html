@@ -1,0 +1,68 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;font:14px system-ui;background:#f4f6fa;color:#0f172a;padding-bottom:56px}header{background:#0f172a;color:#fff;padding:12px;display:flex;justify-content:space-between}
+main{padding:10px}.c{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin-bottom:10px;overflow:auto}
+input,button{width:100%;padding:10px;margin:4px 0;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;box-sizing:border-box}button{background:#2563eb;color:#fff;border:0}
+table{border-collapse:collapse;font-size:12px;width:100%}td,th{border:1px solid #e2e8f0;padding:4px;white-space:nowrap}small{color:#64748b}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}.v{font-size:24px;font-weight:700}.ok{color:#16a34a}.bad{color:#dc2626}.wn{color:#d97706}
+nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #e2e8f0;display:flex}nav button{background:none;color:#64748b;border:0;border-radius:0;margin:0;padding:14px 2px}nav button.on{color:#2563eb;font-weight:700}
+pre{white-space:pre-wrap;font-size:11px}.row{display:flex;justify-content:space-between}
+</style></head><body>
+<header><b>📡 OLT Monitor</b><span id="st">...</span></header>
+<main><div class="c" id="cfg"></div><div id="v"></div></main>
+<nav><button data-t="d" class="on">ড্যাশবোর্ড</button><button data-t="o">ONU</button><button data-t="r">Raw</button><button data-t="l">Log</button><button data-t="s">সেটিংস</button></nav>
+<script>
+var cfg={};try{cfg=JSON.parse(localStorage.getItem("cfg")||"{}")}catch(e){}
+var F=[["base","OLT URL (যেমন https://IP:8001)"],["user","Username"],["pass","Password"]];
+var tab="d",log=[],tables=[],onus=[],pagesOk={},seq=0,timer=null,basic="",busy=false;
+function L(m){log.push(new Date().toLocaleTimeString()+" "+m);if(log.length>150)log.shift()}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function req(m,u,b,ba){return new Promise(function(r){var id="cb"+(++seq);window[id]=function(s){delete window[id];r(JSON.parse(s))};Android.http(m,u,b||"",ba||"",id)})}
+function pd(h){return new DOMParser().parseFromString(h,"text/html")}
+function sform(){var h="<b>OLT সংযোগ</b>";F.forEach(function(f){h+='<input id="'+f[0]+'" placeholder="'+f[1]+'" value="'+esc(cfg[f[0]]||"")+'"'+(f[0]=="pass"?' type="password"':'')+'>'});
+ h+='<button onclick="go()">সংযোগ ও লাইভ সিঙ্ক শুরু</button><small>তথ্য শুধু এই ফোনেই থাকে। অ্যাপ নিজেই লগইন ফর্ম ও পেজ খুঁজে নেয়।</small>';document.getElementById("cfg").innerHTML=h}
+function go(){F.forEach(function(f){cfg[f[0]]=document.getElementById(f[0]).value.trim()});cfg.base=cfg.base.replace(/\/+$/,"");localStorage.setItem("cfg",JSON.stringify(cfg));
+ document.getElementById("cfg").style.display="none";tab="d";clearInterval(timer);start()}
+async function start(){log=[];pagesOk={};basic="";var ok=await login();if(ok)await discover();poll();timer=setInterval(poll,5000)}
+async function login(){var r=await req("GET",cfg.base+"/");L("GET / → "+r.status+" "+(r.error||""));
+ if(r.status==401){basic=cfg.user+":"+cfg.pass;r=await req("GET",cfg.base+"/",null,basic);L("Basic auth → "+r.status);if(r.status<400)return true}
+ var d=pd(r.body),f=d.querySelector("form input[type=password]"),src=r.url;
+ if(!f){var fr=d.querySelectorAll("frame,iframe");for(var i=0;i<fr.length&&!f;i++){var u=new URL(fr[i].getAttribute("src")||"",r.url).href;var r2=await req("GET",u,null,basic);d=pd(r2.body);f=d.querySelector("form input[type=password]");src=r2.url;if(f)L("login form in frame "+u)}}
+ if(!f){L("লগইন ফর্ম পাওয়া যায়নি (সম্ভবত আগেই লগইন/বা JS লগইন)");return true}
+ var form=f.form,body=new URLSearchParams(),u0=false;
+ form.querySelectorAll("input,select").forEach(function(x){var n=x.getAttribute("name");if(!n)return;var t=(x.type||"text").toLowerCase();
+  if(t=="password")body.set(n,cfg.pass);else if(t=="hidden"||t=="submit")body.set(n,x.value||"");else if((t=="text"||t=="email")&&!u0){body.set(n,cfg.user);u0=true}else if(t=="checkbox"){if(x.checked)body.set(n,x.value||"on")}else body.set(n,x.value||"")});
+ var act=new URL(form.getAttribute("action")||"",src).href,meth=(form.getAttribute("method")||"post").toUpperCase();
+ L("login → "+meth+" "+act+" fields: "+Array.from(body.keys()).join(","));
+ var lr=meth=="GET"?await req("GET",act+"?"+body,null,basic):await req("POST",act,body.toString(),basic);
+ L("login response "+lr.status+" "+lr.url);return true}
+async function discover(){var seen={},q=[cfg.base+"/"],depth={},hits=0;depth[q[0]]=0;
+ while(q.length&&Object.keys(seen).length<35){var u=q.shift();if(seen[u])continue;var r=await req("GET",u,null,basic);seen[u]=1;if(r.status!=200)continue;
+  var d=pd(r.body),nt=d.querySelectorAll("table").length,kw=/onu|pon|olt|alarm|optical|status|port|system/i.test(r.body);
+  if(nt>0&&kw){pagesOk[u]=1;hits++}
+  if(depth[u]>=2)continue;
+  d.querySelectorAll("a[href],frame[src],iframe[src]").forEach(function(a){var h=a.getAttribute("href")||a.getAttribute("src")||"";if(!h||/^(javascript|#|mailto)/i.test(h)||/logout|login|\.(css|js|png|jpg|gif|ico)(\?|$)/i.test(h))return;
+   try{var x=new URL(h,r.url);if(x.origin!==new URL(cfg.base).origin)return;x.hash="";var s=x.href;if(!seen[s]&&depth[s]==null){depth[s]=depth[u]+1;q.push(s)}}catch(e){}})}
+ L("পেজ স্ক্যান: "+Object.keys(seen).length+", ডাটা-পেজ: "+hits+" → "+Object.keys(pagesOk).join(" | "))}
+async function poll(){if(busy)return;busy=true;try{var t=[];for(var u in pagesOk){var r=await req("GET",u,null,basic);if(r.status==200){pd(r.body).querySelectorAll("table").forEach(function(x){t.push({u:u,h:x.outerHTML.replace(/<script[\s\S]*?<\/script>/gi,""),x:x})})}
+  else if(r.status==401||r.status==403||r.status==0){L(u+" → "+r.status+" (সেশন শেষ? আবার লগইন)");await login()}}
+ tables=t;onus=extract(t);document.getElementById("st").textContent="Live "+new Date().toLocaleTimeString()+" · "+t.length+" টেবিল"}catch(e){L("poll error "+e)}busy=false;draw()}
+function ci(h,re){for(var i=0;i<h.length;i++)if(re.test(h[i]))return i;return -1}
+function extract(ts){var out=[];ts.forEach(function(t){var rows=Array.from(t.x.querySelectorAll("tr")).map(function(r){return Array.from(r.children).map(function(c){return c.textContent.trim()})}).filter(function(r){return r.length>=3});
+ if(rows.length<2)return;var h=rows[0],st=ci(h,/status|state|online|link/i),rx=ci(h,/rx|receiv|optical|power/i),sn=ci(h,/sn|serial|mac|loid|onu.?id|password/i),nm=ci(h,/name|desc|alias|onu/i),pt=ci(h,/pon|port|slot/i);
+ if(st<0&&rx<0)return;rows.slice(1).forEach(function(r){var s=st>=0?r[st]:"",on=/online|up|work|normal|active|regist/i.test(s)&&!/offline|down|los|dying|inactive|unreg/i.test(s);
+  var rv=rx>=0?parseFloat((r[rx]||"").replace(/[^\d.\-]/g,"")):NaN;out.push({sn:sn>=0?r[sn]:"",name:nm>=0?r[nm]:"",port:pt>=0?r[pt]:"",on:st>=0?on:true,rx:isNaN(rv)?null:rv,raw:r.join(" | ")})})});return out}
+function draw(){var v=document.getElementById("v"),h="";
+ if(tab=="d"){var on=onus.filter(function(o){return o.on}).length,off=onus.length-on,wk=onus.filter(function(o){return o.on&&o.rx!=null&&o.rx<-27}).length;
+  h='<div class="g"><div class="c"><small>ONU মোট</small><div class="v">'+onus.length+'</div></div><div class="c"><small>Online</small><div class="v ok">'+on+'</div></div><div class="c"><small>Offline</small><div class="v bad">'+off+'</div></div><div class="c"><small>দুর্বল সিগন্যাল</small><div class="v wn">'+wk+'</div></div></div>';
+  if(!onus.length)h+='<div class="c"><small>ONU টেবিল এখনও শনাক্ত হয়নি। Log ট্যাব দেখুন এবং Raw ট্যাবে টেবিল আছে কিনা দেখুন।</small></div>'}
+ else if(tab=="o"){var q=(window._q||"").toLowerCase();h='<input placeholder="খুঁজুন (নাম / SN)" value="'+esc(window._q||"")+'" oninput="window._q=this.value;draw()">';
+  onus.filter(function(o){return !q||(o.name+o.sn+o.raw).toLowerCase().indexOf(q)>=0}).forEach(function(o){h+='<div class="c"><div class="row"><b>'+esc(o.name||o.sn||"ONU")+'</b><span class="'+(o.on?"ok":"bad")+'">'+(o.on?"Online":"Offline")+'</span></div><small>'+esc(o.sn)+" "+esc(o.port)+'</small>'+(o.rx!=null?'<div>Rx <span class="'+(o.rx<-27?"bad":o.rx<-25?"wn":"ok")+'">'+o.rx+' dBm</span></div>':"")+'</div>'})}
+ else if(tab=="r"){tables.forEach(function(t){h+='<div class="c"><small>'+esc(t.u)+'</small>'+t.h+'</div>'});if(!tables.length)h='<div class="c"><small>কোনো টেবিল নেই</small></div>'}
+ else if(tab=="l"){h='<div class="c"><pre>'+esc(log.join("\n"))+'</pre><button onclick="Cp()">Log কপি করুন</button></div>'}
+ if(tab!="s")v.innerHTML=h;if(tab=="o"){var i=v.querySelector("input");if(i&&document.activeElement!==i&&window._q){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}}
+function Cp(){try{navigator.clipboard.writeText(log.join("\n"))}catch(e){}}
+document.querySelectorAll("nav button").forEach(function(b){b.onclick=function(){tab=b.dataset.t;document.querySelectorAll("nav button").forEach(function(x){x.classList.toggle("on",x===b)});
+ var c=document.getElementById("cfg");if(tab=="s"){c.style.display="block";document.getElementById("v").innerHTML=""}else{c.style.display="none";draw()}}});
+sform();if(cfg.base&&cfg.user){document.getElementById("cfg").style.display="none";start()}
+</script></body></html>
